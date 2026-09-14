@@ -167,7 +167,8 @@ func duplicateAccountExtra(value map[string]any) (map[string]any, error) {
 
 func canDuplicateAccountType(accountType string) bool {
 	switch accountType {
-	case AccountTypeAPIKey, AccountTypeUpstream, AccountTypeBedrock, AccountTypeServiceAccount:
+	case AccountTypeAPIKey, AccountTypeUpstream, AccountTypeBedrock, AccountTypeServiceAccount,
+		AccountTypeOAuth, AccountTypeSetupToken:
 		return true
 	default:
 		return false
@@ -241,6 +242,10 @@ func cloneAccountValuePointer[T any](value *T) *T {
 // runtime state. Credentials and extra configuration are deep-copied so normalization of the new
 // account cannot mutate the in-memory source. Linked credential shadows are excluded because they
 // intentionally do not own credentials and must be created through CreateShadow.
+//
+// Rotating credential types (oauth, setup-token) are duplicated verbatim, so the copy and its source
+// share one refresh token: whichever account refreshes first wins if the provider rotates it, and the
+// other then needs re-authorization. The copy is created unschedulable so that is a reviewed choice.
 func (s *adminServiceImpl) DuplicateAccount(ctx context.Context, id int64, actorScope, operationKey string) (*Account, error) {
 	operationID := duplicateAccountOperationID(id, actorScope, operationKey)
 	existing, err := s.RecoverDuplicateAccount(ctx, id, actorScope, operationKey)
@@ -264,7 +269,7 @@ func (s *adminServiceImpl) DuplicateAccount(ctx context.Context, id int64, actor
 	if !canDuplicateAccountType(source.Type) {
 		return nil, infraerrors.BadRequest(
 			"ACCOUNT_DUPLICATE_CREDENTIAL_TYPE_UNSUPPORTED",
-			"accounts with rotating or unsupported credential types cannot be duplicated",
+			"accounts with unsupported credential types cannot be duplicated",
 		)
 	}
 

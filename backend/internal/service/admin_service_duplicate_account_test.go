@@ -223,8 +223,30 @@ func TestDuplicateAccountRejectsCredentialShadow(t *testing.T) {
 	require.Len(t, repo.accounts, 1)
 }
 
-func TestDuplicateAccountRejectsRotatingOrUnknownCredentialTypes(t *testing.T) {
-	for _, accountType := range []string{AccountTypeOAuth, AccountTypeSetupToken, "legacy-cookie"} {
+func TestDuplicateAccountRejectsUnknownCredentialTypes(t *testing.T) {
+	ctx := context.Background()
+	repo := newDuplicateAccountRepoStub()
+	svc := &adminServiceImpl{accountRepo: repo, accountDuplicateRepo: repo}
+	source := &Account{
+		Name:        "legacy-credential-account",
+		Platform:    PlatformOpenAI,
+		Type:        "legacy-cookie",
+		Credentials: map[string]any{"cookie": "opaque"},
+	}
+	require.NoError(t, repo.Create(ctx, source))
+
+	_, err := svc.DuplicateAccount(ctx, source.ID, "admin:1", "")
+
+	require.Error(t, err)
+	require.Equal(t, http.StatusBadRequest, infraerrors.Code(err))
+	require.Equal(t, "ACCOUNT_DUPLICATE_CREDENTIAL_TYPE_UNSUPPORTED", infraerrors.Reason(err))
+	require.Len(t, repo.accounts, 1)
+}
+
+// Rotating credential types are duplicated verbatim: the copy carries the same refresh token as its
+// source, and is created unschedulable so the shared credential is reviewed before it serves traffic.
+func TestDuplicateAccountCopiesRotatingCredentials(t *testing.T) {
+	for _, accountType := range []string{AccountTypeOAuth, AccountTypeSetupToken} {
 		t.Run(accountType, func(t *testing.T) {
 			ctx := context.Background()
 			repo := newDuplicateAccountRepoStub()
@@ -233,18 +255,58 @@ func TestDuplicateAccountRejectsRotatingOrUnknownCredentialTypes(t *testing.T) {
 				Name:        "rotating-credential-account",
 				Platform:    PlatformOpenAI,
 				Type:        accountType,
-				Credentials: map[string]any{"refresh_token": "shared-token"},
+				Schedulable: true,
+				Credentials: map[string]any{
+					"access_token":  "at-source",
+					"refresh_token": "shared-token",
+					"client_id":     "client-1",
+				},
 			}
 			require.NoError(t, repo.Create(ctx, source))
 
-			_, err := svc.DuplicateAccount(ctx, source.ID, "admin:1", "")
+			duplicate, err := svc.DuplicateAccount(ctx, source.ID, "admin:1", "")
 
-			require.Error(t, err)
-			require.Equal(t, http.StatusBadRequest, infraerrors.Code(err))
-			require.Equal(t, "ACCOUNT_DUPLICATE_CREDENTIAL_TYPE_UNSUPPORTED", infraerrors.Reason(err))
-			require.Len(t, repo.accounts, 1)
+			require.NoError(t, err)
+			require.NotEqual(t, source.ID, duplicate.ID)
+			require.Equal(t, accountType, duplicate.Type)
+			require.Equal(t, "shared-token", duplicate.Credentials["refresh_token"])
+			require.Equal(t, "at-source", duplicate.Credentials["access_token"])
+			require.Equal(t, "client-1", duplicate.Credentials["client_id"])
+			require.False(t, duplicate.Schedulable, "duplicate must start paused")
+			require.Len(t, repo.accounts, 2)
+
+			// Deep copy: mutating the duplicate must not reach back into the source.
+			duplicate.Credentials["refresh_token"] = "rotated"
+			require.Equal(t, "shared-token", source.Credentials["refresh_token"])
 		})
 	}
+}
+
+// A copied OAuth account must not reuse the source's Codex fingerprint seed, otherwise both accounts
+// would present an identical device identity upstream.
+func TestDuplicateAccountMintsFreshCodexSeedForOAuth(t *testing.T) {
+	ctx := context.Background()
+	repo := newDuplicateAccountRepoStub()
+	svc := &adminServiceImpl{accountRepo: repo, accountDuplicateRepo: repo}
+	source := &Account{
+		Name:        "codex-oauth",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Credentials: map[string]any{"refresh_token": "shared-token"},
+		Extra: map[string]any{
+			codexFingerprintModeExtraKey: "session",
+			codexFingerprintSeedExtraKey: testCodexFingerprintSeed,
+		},
+	}
+	require.NoError(t, repo.Create(ctx, source))
+
+	duplicate, err := svc.DuplicateAccount(ctx, source.ID, "admin:1", "")
+
+	require.NoError(t, err)
+	require.Equal(t, "session", duplicate.Extra[codexFingerprintModeExtraKey])
+	seed, ok := codexFingerprintSeed(duplicate.Extra)
+	require.True(t, ok, "duplicate must receive a fresh fingerprint seed")
+	require.NotEqual(t, testCodexFingerprintSeed, seed)
 }
 
 func TestDuplicateAccountPreservesUngroupedState(t *testing.T) {

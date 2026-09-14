@@ -304,7 +304,15 @@
             />
           </template>
           <template #cell-groups="{ row }">
-            <AccountGroupsCell :groups="accountGroupsForRow(row)" :max-display="4" />
+            <AccountGroupsCell
+              :groups="accountGroupsForRow(row)"
+              :max-display="4"
+              editable
+              :account="row"
+              :available-groups="groups"
+              :saving="savingGroupsAccountIDs.has(row.id)"
+              @save="ids => handleGroupsSave(row, ids)"
+            />
           </template>
           <template #header-usage="{ column }">
             <div class="flex items-center">
@@ -327,25 +335,14 @@
             />
           </template>
           <template #cell-proxy="{ row }">
-            <div class="flex flex-col gap-1">
-              <div v-if="row.proxy" class="flex items-center gap-2">
-                <span class="text-sm text-gray-700 dark:text-gray-300">{{ row.proxy.name }}</span>
-                <span v-if="row.proxy.country_code" class="text-xs text-gray-500 dark:text-gray-400">
-                  ({{ row.proxy.country_code }})
-                </span>
-              </div>
-              <span v-else class="text-sm text-gray-400 dark:text-dark-500">-</span>
-              <div v-if="row.proxy && row.proxy.expires_at" class="flex items-center gap-2 text-xs">
-                <span class="text-gray-600 dark:text-gray-300">{{ formatDateTime(row.proxy.expires_at) }}</span>
-                <span :class="proxyExpiryBadge(row.proxy)">{{ proxyExpiryText(row.proxy) }}</span>
-              </div>
-              <div v-if="row.proxy_fallback_origin_id" class="flex items-center gap-1">
-                <span class="inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200" :title="t('admin.accounts.fallbackActiveTip', { origin: row.proxy_fallback_origin_name })">
-                  {{ t('admin.accounts.fallbackActive') }}
-                </span>
-                <button class="text-xs px-1.5 py-0.5 rounded border border-gray-300 dark:border-dark-600 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-dark-700" @click="onRevertFallback(row)">{{ t('admin.accounts.revertProxy') }}</button>
-              </div>
-            </div>
+            <AccountProxyCell
+              :account="row"
+              :proxies="proxies"
+              :editable="row.parent_account_id == null"
+              :saving="savingProxyAccountIDs.has(row.id)"
+              @save="proxyID => handleProxySave(row, proxyID)"
+              @revert-fallback="onRevertFallback(row)"
+            />
           </template>
           <template #cell-rate_multiplier="{ row }">
             <span class="inline-flex items-center gap-1 text-sm font-mono text-gray-700 dark:text-gray-300">
@@ -435,6 +432,17 @@
                 <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" /></svg>
                 <span class="text-xs">{{ t('common.edit') }}</span>
               </button>
+              <button
+                v-if="canDuplicateAccount(row)"
+                data-testid="account-duplicate"
+                :title="duplicatingAccountIDs.has(row.id) ? t('admin.accounts.duplicating') : t('admin.accounts.duplicateAccount')"
+                :disabled="duplicatingAccountIDs.has(row.id)"
+                @click="handleDuplicateAccount(row)"
+                class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-gray-100 hover:text-primary-600 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-dark-700 dark:hover:text-primary-400"
+              >
+                <Icon name="copy" size="sm" />
+                <span class="text-xs">{{ duplicatingAccountIDs.has(row.id) ? t('admin.accounts.duplicating') : t('admin.accounts.duplicate') }}</span>
+              </button>
               <button @click="handleDelete(row)" class="flex flex-col items-center gap-0.5 rounded-lg p-1.5 text-gray-500 transition-colors hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/20 dark:hover:text-red-400">
                 <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" /></svg>
                 <span class="text-xs">{{ t('common.delete') }}</span>
@@ -456,7 +464,7 @@
     <AccountTestModal :show="showTest" :account="testingAcc" @close="closeTestModal" />
     <AccountStatsModal :show="showStats" :account="statsAcc" @close="closeStatsModal" />
     <ScheduledTestsPanel :show="showSchedulePanel" :account-id="scheduleAcc?.id ?? null" :model-options="scheduleModelOptions" @close="closeSchedulePanel" />
-    <AccountActionMenu :show="menu.show" :account="menu.acc" :anchor-rect="menu.anchorRect" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @duplicate="handleDuplicateAccount" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" />
+    <AccountActionMenu :show="menu.show" :account="menu.acc" :anchor-rect="menu.anchorRect" @close="menu.show = false" @test="handleTest" @stats="handleViewStats" @schedule="handleSchedule" @reauth="handleReAuth" @refresh-token="handleRefresh" @recover-state="handleRecoverState" @reset-quota="handleResetQuota" @set-privacy="handleSetPrivacy" @create-spark-shadow="handleCreateSparkShadow" />
     <SyncFromCrsModal :show="showSync" @close="showSync = false" @synced="reload" />
     <ImportDataModal :show="showImportData" @close="showImportData = false" @imported="handleDataImported" />
     <BulkEditAccountModal
@@ -479,6 +487,16 @@
         <span>{{ t('admin.accounts.dataExportIncludeProxies') }}</span>
       </label>
     </ConfirmDialog>
+    <ConfirmDialog
+      :show="showGroupsMixedChannelWarning"
+      :title="t('admin.accounts.mixedChannelWarningTitle')"
+      :message="groupsMixedChannelMessage"
+      :confirm-text="t('common.confirm')"
+      :cancel-text="t('common.cancel')"
+      :danger="true"
+      @confirm="confirmGroupsMixedChannel"
+      @cancel="closeGroupsMixedChannelWarning"
+    />
     <ErrorPassthroughRulesModal :show="showErrorPassthrough" @close="showErrorPassthrough = false" />
     <TLSFingerprintProfilesModal :show="showTLSFingerprintProfiles" @close="showTLSFingerprintProfiles = false" />
     <TotpStepUpDialog :controller="accountExportStepUp" />
@@ -514,10 +532,12 @@ import AccountTestModal from '@/components/admin/account/AccountTestModal.vue'
 import AccountStatsModal from '@/components/admin/account/AccountStatsModal.vue'
 import ScheduledTestsPanel from '@/components/admin/account/ScheduledTestsPanel.vue'
 import type { SelectOption } from '@/components/common/Select.vue'
+import { canDuplicateAccount, sharesRotatingCredential } from '@/components/account/accountDuplicate'
 import AccountStatusIndicator from '@/components/account/AccountStatusIndicator.vue'
 import AccountUsageCell from '@/components/account/AccountUsageCell.vue'
 import AccountTodayStatsCell from '@/components/account/AccountTodayStatsCell.vue'
 import AccountGroupsCell from '@/components/account/AccountGroupsCell.vue'
+import AccountProxyCell from '@/components/account/AccountProxyCell.vue'
 import AccountCapacityCell from '@/components/account/AccountCapacityCell.vue'
 import UpstreamBillingRateCell from '@/components/account/UpstreamBillingRateCell.vue'
 import PlatformTypeBadge from '@/components/common/PlatformTypeBadge.vue'
@@ -527,7 +547,6 @@ import TLSFingerprintProfilesModal from '@/components/admin/TLSFingerprintProfil
 import { fetchAllAccountIds } from '@/utils/accountSelection'
 import { buildGrokUsageRefreshKey, buildOpenAIUsageRefreshKey } from '@/utils/accountUsageRefresh'
 import { formatDateTime, formatRelativeTime } from '@/utils/format'
-import { proxyExpiryBadgeClass, proxyExpiryLabelKey } from '@/utils/proxyExpiry'
 import { extractApiErrorMessage } from '@/utils/apiError'
 import { sanitizeUrl } from '@/utils/url'
 import { getFloatingPanelPosition } from '@/utils/floatingPanel'
@@ -2248,6 +2267,106 @@ const handleProbeUpstreamBilling = async (account: Account) => {
     probingUpstreamBilling.delete(account.id)
   }
 }
+// Inline proxy selection from the accounts table. The backend reads 0 as "clear the proxy",
+// so null from the dropdown has to be translated on the way out.
+const savingProxyAccountIDs = reactive(new Set<number>())
+
+const handleProxySave = async (account: AccountListItem, proxyID: number | null) => {
+  if (savingProxyAccountIDs.has(account.id)) return
+  savingProxyAccountIDs.add(account.id)
+  try {
+    const updated = await adminAPI.accounts.update(account.id, { proxy_id: proxyID ?? 0 })
+    patchAccountInList(updated)
+    enterAutoRefreshSilentWindow()
+    appStore.showSuccess(t('admin.accounts.proxyUpdated'))
+  } catch (error: any) {
+    console.error('Failed to update account proxy:', error)
+    appStore.showError(error?.message || t('admin.accounts.failedToUpdate'))
+  } finally {
+    savingProxyAccountIDs.delete(account.id)
+  }
+}
+
+// Inline group editing from the accounts table. Mirrors the edit modal's mixed-channel guard so the
+// shortcut cannot bind a risky combination the full form would have warned about.
+const savingGroupsAccountIDs = reactive(new Set<number>())
+const showGroupsMixedChannelWarning = ref(false)
+const groupsMixedChannelMessage = ref('')
+const pendingGroupsEdit = ref<{ account: AccountListItem; groupIDs: number[] } | null>(null)
+
+const groupsNeedMixedChannelCheck = (platform: AccountPlatform) =>
+  platform === 'antigravity' || platform === 'anthropic'
+
+const closeGroupsMixedChannelWarning = () => {
+  showGroupsMixedChannelWarning.value = false
+  groupsMixedChannelMessage.value = ''
+  pendingGroupsEdit.value = null
+}
+
+const persistAccountGroups = async (
+  account: AccountListItem,
+  groupIDs: number[],
+  confirmedMixedChannel: boolean
+) => {
+  savingGroupsAccountIDs.add(account.id)
+  try {
+    const updated = await adminAPI.accounts.update(account.id, {
+      group_ids: groupIDs,
+      ...(confirmedMixedChannel ? { confirm_mixed_channel_risk: true } : {})
+    })
+    patchAccountInList(updated)
+    enterAutoRefreshSilentWindow()
+    appStore.showSuccess(t('admin.accounts.groupsUpdated'))
+  } catch (error: any) {
+    console.error('Failed to update account groups:', error)
+    appStore.showError(error?.message || t('admin.accounts.failedToUpdate'))
+  } finally {
+    savingGroupsAccountIDs.delete(account.id)
+  }
+}
+
+const handleGroupsSave = async (account: AccountListItem, groupIDs: number[]) => {
+  if (savingGroupsAccountIDs.has(account.id)) return
+  if (groupsNeedMixedChannelCheck(account.platform)) {
+    savingGroupsAccountIDs.add(account.id)
+    let risk
+    try {
+      risk = await adminAPI.accounts.checkMixedChannelRisk({
+        platform: account.platform,
+        group_ids: groupIDs,
+        account_id: account.id
+      })
+    } catch (error: any) {
+      console.error('Failed to check mixed channel risk:', error)
+      appStore.showError(error?.message || t('admin.accounts.failedToUpdate'))
+      return
+    } finally {
+      savingGroupsAccountIDs.delete(account.id)
+    }
+    if (risk?.has_risk) {
+      const details = risk.details
+      groupsMixedChannelMessage.value = details
+        ? t('admin.accounts.mixedChannelWarning', {
+            groupName: details.group_name || 'Unknown',
+            currentPlatform: details.current_platform || 'Unknown',
+            otherPlatform: details.other_platform || 'Unknown'
+          })
+        : risk.message || t('admin.accounts.failedToUpdate')
+      pendingGroupsEdit.value = { account, groupIDs }
+      showGroupsMixedChannelWarning.value = true
+      return
+    }
+  }
+  await persistAccountGroups(account, groupIDs, false)
+}
+
+const confirmGroupsMixedChannel = async () => {
+  const pending = pendingGroupsEdit.value
+  closeGroupsMixedChannelWarning()
+  if (!pending) return
+  await persistAccountGroups(pending.account, pending.groupIDs, true)
+}
+
 const handleAccountUpdated = (updatedAccount: Account) => {
   patchAccountInList(updatedAccount)
   enterAutoRefreshSilentWindow()
@@ -2335,13 +2454,17 @@ const handleSchedule = async (a: Account) => {
 }
 const closeSchedulePanel = () => { showSchedulePanel.value = false; scheduleAcc.value = null; scheduleModelOptions.value = [] }
 const handleReAuth = (a: Account) => { reAuthAcc.value = a; showReAuth.value = true }
-const duplicatingAccountIDs = new Set<number>()
+const duplicatingAccountIDs = reactive(new Set<number>())
 const handleDuplicateAccount = async (a: Account) => {
   if (duplicatingAccountIDs.has(a.id)) return
   duplicatingAccountIDs.add(a.id)
   try {
     const duplicate = await adminAPI.accounts.duplicate(a.id)
-    appStore.showSuccess(t('admin.accounts.duplicateSuccess', { name: duplicate.name }))
+    // Rotating credential types end up sharing one refresh token with their source; say so.
+    const successKey = sharesRotatingCredential(a)
+      ? 'admin.accounts.duplicateSharedCredentialSuccess'
+      : 'admin.accounts.duplicateSuccess'
+    appStore.showSuccess(t(successKey, { name: duplicate.name }))
     reload()
   } catch (error: any) {
     console.error('Failed to duplicate account:', error)
@@ -2488,13 +2611,6 @@ const isExpired = (value: number | null) => {
   if (!value) return false
   return value * 1000 <= Date.now()
 }
-// 所绑定代理的有效期(逻辑同 /admin/proxies,见 utils/proxyExpiry)
-const proxyExpiryBadge = (p: AccountProxy): string => proxyExpiryBadgeClass(p.expires_at, p.status)
-const proxyExpiryText = (p: AccountProxy): string => {
-  const { key, params } = proxyExpiryLabelKey(p.expires_at, p.status)
-  return params ? t(key, params) : t(key)
-}
-
 // 表格滚动时关闭行操作菜单，并让顶部工具菜单继续贴紧触发按钮。
 const handleScroll = (event: Event) => {
   if (event.target instanceof Element && event.target.closest('.action-menu-content')) return

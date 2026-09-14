@@ -1,5 +1,78 @@
 <template>
-  <div v-if="groups && groups.length > 0" class="relative max-w-56">
+  <!-- Editable mode: the badges themselves are the trigger for an inline multi-select dropdown. -->
+  <div v-if="editable" class="relative max-w-56">
+    <button
+      ref="triggerRef"
+      type="button"
+      data-testid="account-groups-trigger"
+      :disabled="saving"
+      :title="t('admin.accounts.editGroups')"
+      @click.stop="toggleEditor"
+      class="w-full rounded-lg border border-transparent p-1 text-left transition-colors hover:border-gray-200 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:border-dark-600 dark:hover:bg-dark-700"
+    >
+      <div v-if="groups && groups.length > 0" class="flex max-h-14 flex-wrap gap-1 overflow-hidden">
+        <GroupBadge
+          v-for="group in displayGroups"
+          :key="group.id"
+          :name="group.name"
+          :platform="group.platform"
+          :subscription-type="group.subscription_type"
+          :rate-multiplier="group.rate_multiplier"
+          :show-rate="false"
+          class="max-w-24"
+        />
+        <span
+          v-if="hiddenCount > 0"
+          class="inline-flex items-center gap-0.5 whitespace-nowrap rounded-md bg-gray-100 px-1.5 py-0.5 text-xs font-medium text-gray-600 dark:bg-dark-600 dark:text-gray-300"
+        >
+          +{{ hiddenCount }}
+        </span>
+      </div>
+      <span v-else class="text-sm text-gray-400 dark:text-dark-500">
+        {{ t('admin.accounts.noGroupsAssigned') }}
+      </span>
+    </button>
+
+    <Teleport to="body">
+      <div v-if="showEditor" class="fixed inset-0 z-40" @click="closeEditor" />
+      <div
+        v-if="showEditor"
+        ref="editorRef"
+        data-testid="account-groups-editor"
+        class="fixed z-50 flex flex-col overflow-y-auto rounded-lg border border-gray-200 bg-white p-3 shadow-lg dark:border-dark-600 dark:bg-dark-800"
+        :style="editorStyle"
+        @click.stop
+      >
+        <GroupSelector
+          v-model="draftGroupIDs"
+          :groups="availableGroups"
+          :platform="account?.platform"
+          :mixed-scheduling="mixedScheduling"
+          searchable
+        />
+        <div class="mt-3 flex items-center justify-end gap-2">
+          <button
+            type="button"
+            @click="closeEditor"
+            class="rounded-lg px-3 py-1.5 text-xs font-medium text-gray-600 transition-colors hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-dark-700"
+          >
+            {{ t('common.cancel') }}
+          </button>
+          <button
+            type="button"
+            data-testid="account-groups-save"
+            :disabled="saving || !isDirty"
+            @click="handleSave"
+            class="rounded-lg bg-primary-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-primary-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {{ saving ? t('common.submitting') : t('common.save') }}
+          </button>
+        </div>
+      </div>
+    </Teleport>
+  </div>
+
+  <div v-else-if="groups && groups.length > 0" class="relative max-w-56">
     <!-- 分组容器：固定最大宽度，最多显示2行 -->
     <div class="flex flex-wrap gap-1 max-h-14 overflow-hidden">
       <GroupBadge
@@ -78,25 +151,47 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import GroupBadge from '@/components/common/GroupBadge.vue'
-import type { Group } from '@/types'
+import GroupSelector from '@/components/common/GroupSelector.vue'
+import { getFloatingPanelPosition } from '@/utils/floatingPanel'
+import type { Account, AccountListItem, AdminGroup, Group } from '@/types'
 
 interface Props {
   groups: Group[] | null | undefined
   maxDisplay?: number
+  // Inline editing: the cell needs the owning account (platform filter, current binding)
+  // and the full group catalog to offer as options.
+  editable?: boolean
+  account?: Account | AccountListItem | null
+  availableGroups?: AdminGroup[]
+  saving?: boolean
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  maxDisplay: 4
+  maxDisplay: 4,
+  editable: false,
+  account: null,
+  availableGroups: () => [],
+  saving: false
 })
+
+const emit = defineEmits<{
+  save: [groupIDs: number[]]
+}>()
 
 const { t } = useI18n()
 
 const moreButtonRef = ref<HTMLElement | null>(null)
 const popoverRef = ref<HTMLElement | null>(null)
 const showPopover = ref(false)
+
+const triggerRef = ref<HTMLElement | null>(null)
+const editorRef = ref<HTMLElement | null>(null)
+const showEditor = ref(false)
+const draftGroupIDs = ref<number[]>([])
+const editorPosition = ref({ top: 0 as number | null, bottom: null as number | null, left: 0, width: 352, maxHeight: 400 })
 
 // 显示的分组（最多显示 maxDisplay 个）
 const displayGroups = computed(() => {
@@ -113,6 +208,21 @@ const hiddenCount = computed(() => {
   if (!props.groups) return 0
   if (props.groups.length <= props.maxDisplay) return 0
   return props.groups.length - (props.maxDisplay - 1)
+})
+
+const assignedGroupIDs = computed(() => [...(props.account?.group_ids ?? [])].sort((a, b) => a - b))
+
+// Antigravity accounts may opt into anthropic/gemini groups; GroupSelector needs the flag to widen
+// its platform filter the same way the edit modal does.
+const mixedScheduling = computed(
+  () => (props.account?.extra as Record<string, unknown> | undefined)?.mixed_scheduling === true
+)
+
+const isDirty = computed(() => {
+  const draft = [...draftGroupIDs.value].sort((a, b) => a - b)
+  const assigned = assignedGroupIDs.value
+  if (draft.length !== assigned.length) return true
+  return draft.some((id, index) => id !== assigned[index])
 })
 
 // Popover 位置样式
@@ -141,18 +251,74 @@ const popoverStyle = computed(() => {
   }
 })
 
+const editorStyle = computed(() => ({
+  top: editorPosition.value.top === null ? 'auto' : `${editorPosition.value.top}px`,
+  bottom: editorPosition.value.bottom === null ? 'auto' : `${editorPosition.value.bottom}px`,
+  left: `${editorPosition.value.left}px`,
+  width: `${editorPosition.value.width}px`,
+  maxHeight: `${editorPosition.value.maxHeight}px`
+}))
+
+const updateEditorPosition = () => {
+  const trigger = triggerRef.value
+  if (!trigger) return
+  editorPosition.value = getFloatingPanelPosition(
+    trigger.getBoundingClientRect(),
+    window.innerWidth,
+    window.innerHeight,
+    { maxWidth: 352, viewportPadding: 8 }
+  )
+}
+
+const closeEditor = () => {
+  showEditor.value = false
+}
+
+const openEditor = async () => {
+  draftGroupIDs.value = [...(props.account?.group_ids ?? [])]
+  showEditor.value = true
+  await nextTick()
+  updateEditorPosition()
+}
+
+const toggleEditor = () => {
+  if (showEditor.value) {
+    closeEditor()
+    return
+  }
+  void openEditor()
+}
+
+const handleSave = () => {
+  if (props.saving || !isDirty.value) return
+  emit('save', [...draftGroupIDs.value])
+}
+
+// The parent closes the editor by clearing its saving flag once the update lands.
+watch(
+  () => props.saving,
+  (saving, wasSaving) => {
+    if (wasSaving && !saving && !isDirty.value) closeEditor()
+  }
+)
+
 // 关闭 popover 的键盘事件
 const handleKeydown = (e: KeyboardEvent) => {
   if (e.key === 'Escape') {
     showPopover.value = false
+    closeEditor()
   }
 }
 
 onMounted(() => {
   window.addEventListener('keydown', handleKeydown)
+  window.addEventListener('resize', updateEditorPosition)
+  window.addEventListener('scroll', updateEditorPosition, true)
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleKeydown)
+  window.removeEventListener('resize', updateEditorPosition)
+  window.removeEventListener('scroll', updateEditorPosition, true)
 })
 </script>
