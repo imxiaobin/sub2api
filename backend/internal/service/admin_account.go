@@ -245,7 +245,7 @@ func cloneAccountValuePointer[T any](value *T) *T {
 //
 // Rotating credential types (oauth, setup-token) are duplicated verbatim, so the copy and its source
 // share one refresh token: whichever account refreshes first wins if the provider rotates it, and the
-// other then needs re-authorization. The copy is created unschedulable so that is a reviewed choice.
+// other then needs re-authorization.
 func (s *adminServiceImpl) DuplicateAccount(ctx context.Context, id int64, actorScope, operationKey string) (*Account, error) {
 	operationID := duplicateAccountOperationID(id, actorScope, operationKey)
 	existing, err := s.RecoverDuplicateAccount(ctx, id, actorScope, operationKey)
@@ -332,8 +332,9 @@ func (s *adminServiceImpl) DuplicateAccount(ctx context.Context, id int64, actor
 	if err != nil {
 		return nil, err
 	}
-	// A copied credential must be reviewed before it can share live traffic with its source.
-	duplicate.Schedulable = false
+	// The duplicate is a faithful copy, scheduling state included: a copy of a live account goes
+	// straight into rotation instead of waiting to be enabled by hand.
+	duplicate.Schedulable = source.Schedulable
 	if s.accountDuplicateRepo == nil {
 		return nil, errors.New("account duplicate repository is not configured")
 	}

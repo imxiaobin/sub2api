@@ -178,7 +178,7 @@ func TestDuplicateAccountCopiesConfigurationAndResetsRuntimeState(t *testing.T) 
 	}, repo.accountGroupsOf[duplicate.ID])
 
 	require.Equal(t, StatusActive, duplicate.Status)
-	require.False(t, duplicate.Schedulable)
+	require.True(t, duplicate.Schedulable, "duplicate inherits the source's scheduling state")
 	require.Empty(t, duplicate.ErrorMessage)
 	require.Nil(t, duplicate.LastUsedAt)
 	require.Nil(t, duplicate.RateLimitedAt)
@@ -272,7 +272,7 @@ func TestDuplicateAccountCopiesRotatingCredentials(t *testing.T) {
 			require.Equal(t, "shared-token", duplicate.Credentials["refresh_token"])
 			require.Equal(t, "at-source", duplicate.Credentials["access_token"])
 			require.Equal(t, "client-1", duplicate.Credentials["client_id"])
-			require.False(t, duplicate.Schedulable, "duplicate must start paused")
+			require.True(t, duplicate.Schedulable, "duplicate inherits the source's scheduling state")
 			require.Len(t, repo.accounts, 2)
 
 			// Deep copy: mutating the duplicate must not reach back into the source.
@@ -280,6 +280,26 @@ func TestDuplicateAccountCopiesRotatingCredentials(t *testing.T) {
 			require.Equal(t, "shared-token", source.Credentials["refresh_token"])
 		})
 	}
+}
+
+// Scheduling state is copied, not forced: duplicating a paused account keeps the copy paused.
+func TestDuplicateAccountInheritsPausedSchedulingState(t *testing.T) {
+	ctx := context.Background()
+	repo := newDuplicateAccountRepoStub()
+	svc := &adminServiceImpl{accountRepo: repo, accountDuplicateRepo: repo}
+	source := &Account{
+		Name:        "paused-source",
+		Platform:    PlatformOpenAI,
+		Type:        AccountTypeOAuth,
+		Schedulable: false,
+		Credentials: map[string]any{"refresh_token": "shared-token"},
+	}
+	require.NoError(t, repo.Create(ctx, source))
+
+	duplicate, err := svc.DuplicateAccount(ctx, source.ID, "admin:1", "")
+
+	require.NoError(t, err)
+	require.False(t, duplicate.Schedulable)
 }
 
 // A copied OAuth account must not reuse the source's Codex fingerprint seed, otherwise both accounts
