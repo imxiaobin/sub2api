@@ -67,7 +67,9 @@ type codexFingerprintMode string
 
 const (
 	// codexFingerprintOff 不做任何收敛，原样透传客户端标识。
-	// 这是默认值：收敛是显式 opt-in 的（见 GetCodexFingerprintMode）。
+	// 这是**读取侧**的默认值：未设置 / 非法值一律按 off 处理（见 GetCodexFingerprintMode），
+	// 已有账号的行为因此不变。klno 分支只在**创建期**把缺省值写成 device
+	// （见 prepareCodexFingerprintExtraForCreate），新老账号由此区分开。
 	codexFingerprintOff codexFingerprintMode = "off"
 	// codexFingerprintDevice 仅收敛 installation_id 为账号级恒定值。
 	// 上游看到 1 台设备 + 多会话（每用户各自的 session）。
@@ -141,13 +143,37 @@ func codexFingerprintSeed(extra map[string]any) (string, bool) {
 	return canonicalCodexFingerprintSeed(extra[codexFingerprintSeedExtraKey])
 }
 
+// codexFingerprintCreateDefaultMode 是 klno 分支下新建 / 导入 OpenAI OAuth 类账号时
+// codex_fingerprint_mode 的缺省值。上游默认 off，这里默认 device。
+const codexFingerprintCreateDefaultMode = codexFingerprintDevice
+
+// applyCodexFingerprintCreateDefaults 为 OpenAI OAuth 类新账号补上 klno 默认的指纹收敛配置。
+//
+// 只在键**完全缺失**时补默认值：调用方显式传入的配置一律尊重，包括显式关闭
+// （codex_fingerprint_mode = "off" / codex_experimental_fingerprint_convergence = false）。
+// 新建账号弹窗因此必须显式提交这两个键，否则管理员当场取消勾选会被这里重新打开。
+// 已有账号不走创建路径，不受影响。
+func applyCodexFingerprintCreateDefaults(extra map[string]any) map[string]any {
+	if extra == nil {
+		extra = make(map[string]any, 2)
+	}
+	if _, ok := extra[codexFingerprintModeExtraKey]; !ok {
+		extra[codexFingerprintModeExtraKey] = string(codexFingerprintCreateDefaultMode)
+	}
+	if _, ok := extra[codexFingerprintConvergenceExtraKey]; !ok {
+		extra[codexFingerprintConvergenceExtraKey] = true
+	}
+	return extra
+}
+
 func prepareCodexFingerprintExtraForCreate(platform, accountType string, extra map[string]any) map[string]any {
 	prepared := stripCodexFingerprintSeed(extra)
-	if platform != PlatformOpenAI || (accountType != AccountTypeOAuth && accountType != AccountTypeSetupToken) || !codexFingerprintModeRequiresSeed(codexFingerprintModeFromExtra(prepared)) {
+	if platform != PlatformOpenAI || (accountType != AccountTypeOAuth && accountType != AccountTypeSetupToken) {
 		return prepared
 	}
-	if prepared == nil {
-		prepared = make(map[string]any, 1)
+	prepared = applyCodexFingerprintCreateDefaults(prepared)
+	if !codexFingerprintModeRequiresSeed(codexFingerprintModeFromExtra(prepared)) {
+		return prepared
 	}
 	prepared[codexFingerprintSeedExtraKey] = newCodexFingerprintSeed()
 	return prepared

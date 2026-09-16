@@ -653,3 +653,103 @@ describe('CreateAccountModal OpenAI long-context billing', () => {
     expect(createOpenAICodexPATMock.mock.calls[0]?.[0]?.extra?.openai_long_context_billing_enabled).toBe(false)
   })
 })
+
+// klno：新建 / 导入的 OpenAI OAuth 账号默认开启 device 收敛 + 实验性指纹收敛。
+// 后端在创建期对缺失的键兜底同一套默认值（prepareCodexFingerprintExtraForCreate），
+// 所以前端必须**显式**提交当前值——包括 off / false，否则管理员当场取消的勾选
+// 会被后端默认重新打开。
+describe('CreateAccountModal Codex 指纹收敛默认值', () => {
+  beforeEach(() => {
+    authIsSimpleMode.value = true
+    createAccountMock.mockReset().mockResolvedValue({ id: 42, platform: 'openai', type: 'apikey' })
+    probeUpstreamBillingMock.mockReset().mockResolvedValue({})
+    syncUpstreamModelsMock.mockReset().mockResolvedValue({ models: [], metadata: {} })
+    showWarningMock.mockReset()
+    importCodexSessionMock.mockReset().mockResolvedValue({
+      created: 1,
+      updated: 0,
+      skipped: 0,
+      failed: 0,
+      errors: [],
+      warnings: [],
+    })
+    createOpenAICodexPATMock.mockReset().mockResolvedValue({})
+  })
+
+  afterEach(() => vi.useRealTimers())
+
+  it('OAuth 账号表单默认勾选实验性指纹收敛并选中「仅设备」', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+
+    const convergence = wrapper.get('[data-testid="create-codex-fingerprint-convergence"]')
+    expect((convergence.element as HTMLInputElement).checked).toBe(true)
+    expect(
+      wrapper.getComponent('[data-testid="create-codex-fingerprint-mode-select"]').props('modelValue')
+    ).toBe('device')
+  })
+
+  it('Codex session 导入默认带上 device 收敛与实验性指纹收敛', async () => {
+    const wrapper = await openCodexImportStep()
+    await wrapper.get('[data-testid="import-codex-session"]').trigger('click')
+    await flushPromises()
+
+    const extra = importCodexSessionMock.mock.calls[0]?.[0]?.extra
+    expect(extra?.codex_fingerprint_mode).toBe('device')
+    expect(extra?.codex_experimental_fingerprint_convergence).toBe(true)
+  })
+
+  it('Codex PAT 导入默认带上 device 收敛与实验性指纹收敛', async () => {
+    const wrapper = await openCodexImportStep()
+    await wrapper.get('[data-testid="import-codex-pat"]').trigger('click')
+    await flushPromises()
+
+    const extra = createOpenAICodexPATMock.mock.calls[0]?.[0]?.extra
+    expect(extra?.codex_fingerprint_mode).toBe('device')
+    expect(extra?.codex_experimental_fingerprint_convergence).toBe(true)
+  })
+
+  it('取消勾选后显式提交 false，不能靠缺键（会被后端默认重新打开）', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    await wrapper.get('[data-testid="create-codex-fingerprint-convergence"]').setValue(false)
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Codex import')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await wrapper.get('[data-testid="import-codex-session"]').trigger('click')
+    await flushPromises()
+
+    const extra = importCodexSessionMock.mock.calls[0]?.[0]?.extra
+    expect(extra?.codex_experimental_fingerprint_convergence).toBe(false)
+  })
+
+  it('选择「关闭」后显式提交 off，不能靠缺键', async () => {
+    const wrapper = mountModal()
+    await selectButtonByText(wrapper, 'OpenAI')
+    wrapper
+      .getComponent('[data-testid="create-codex-fingerprint-mode-select"]')
+      .vm.$emit('update:modelValue', 'off')
+    await wrapper.get('form#create-account-form input[type="text"]').setValue('Codex import')
+    await wrapper.get('form#create-account-form').trigger('submit.prevent')
+    await wrapper.get('[data-testid="import-codex-session"]').trigger('click')
+    await flushPromises()
+
+    expect(importCodexSessionMock.mock.calls[0]?.[0]?.extra?.codex_fingerprint_mode).toBe('off')
+  })
+
+  it('OpenAI API Key 账号不写入这两个键', async () => {
+    await submitApiKeyAccount('openai')
+
+    const extra = createAccountMock.mock.calls[0]?.[0]?.extra
+    expect(extra).not.toHaveProperty('codex_fingerprint_mode')
+    expect(extra).not.toHaveProperty('codex_experimental_fingerprint_convergence')
+  })
+
+  it('非 OpenAI 账号不写入这两个键', async () => {
+    await submitApiKeyAccount('anthropic')
+
+    // anthropic API Key 账号根本不产生 extra，两个键自然缺席。
+    const extra = createAccountMock.mock.calls[0]?.[0]?.extra ?? {}
+    expect(extra).not.toHaveProperty('codex_fingerprint_mode')
+    expect(extra).not.toHaveProperty('codex_experimental_fingerprint_convergence')
+  })
+})
